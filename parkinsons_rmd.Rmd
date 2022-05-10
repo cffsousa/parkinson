@@ -1,0 +1,441 @@
+---
+title: "Classificação de portadores de parkinson com recurso a métodos de aprendizagem estatítica"
+author:
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+getwd()
+
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(gghighlight)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rattle)
+library(ipred)
+library(randomForest)
+library(gbm)
+library(xgboost)
+library(e1071)
+library(ROSE)
+
+set.seed(123)
+
+```
+# 1. Introdução
+
+Parkinson é uma doença neurologica progressiva e degenerativa que afeta os níveis de dopamina no cérebro.Manisfesta-se através da deterioração do movimento, incluindo a presença de tremores e rigidez. É também comumente marcada por alteraçóes na fala, incluindo disartria (dificulade em articular sons), hipofonia (tom de voz baixo) e monotonia da voz.
+Para além dos sintomas anteriores observa-se também uma diminuição da capacidade cognitiva e podem ocorrer mudanças no humor assim como um aumento do risco de demência.
+
+Tradicionalmente o diagnostico do Parkinson involve a recolha de um historial neurológico e a observação da capacidade motora do paciente em diversas situações. Sendo que não existe um teste laboratirial definitivo para fazer o diagnóstico, este pode se revelar difícil, principalmente em fases iniciais da doença.
+
+Como a monotorização da doença ao longo do tempo requer várias visitas a um centro clínico e exames demorados, um processo que permita identificar a doença sem a necessidade de deslocações pode ter um impacto significativo no decorrer de todo o processo, não só para o paciente mas para todo o corpo de profissionais envolvido. Como pacientes com Parkinson tendem a paresentar caracteristicas vocais similares, gravações da voz podem ser um método eficaz par adiagnosticar e identificar estados de progressão da doença ao longo do tempo de forma não invasiva. 
+
+Assim, através da aplicação de métodos de aprendizagem a esta base de dados, pretende-se ver se é possivel obter resultados satisfatórios na classificação de pacientes com a doença de Parkinson.
+
+
+```{r}
+dataset <- read.csv("Parkinsson disease.csv")
+str(dataset)
+apply(dataset, 2, function(x) any(is.na(x)))
+```
+### 1.1. Dicionario de variaveis
+
+* name - identificação do individuo
+* MDVP:Fo(Hz) - frequência vocal fundamental média
+* MDVP:Fhi(Hz) - frequência vocal fundamental máxima
+* MDVP:Flo(Hz) - frequência vocal fundamental mínima
+* MDVP:Jitter(%) -Avaliação da variabilidade do discurso (percentagem)
+* MDVP:Jitter(Abs) - Avaliação da variabilidade do discurso (valor absoluto)
+* MDVP:RAP -	MDVP Relative Amplitude Perturbation
+* MDVP:PPQ - MDVP five-point period perturbation quotient
+* Jitter:DDP - Diferença média absoluta entre ciclos
+* MDVP:Shimmer	- variação da amplitude do jitter
+* MDVP:Shimmer(dB) -	variação da amplitude do jitter em decibels
+* Shimmer:APQ3 -	Three-point amplitude perturbation quotient
+* Shimmer:APQ5	- Five-point amplitude perturbation quotient
+* MDVP:APQ11	- 11-point amplitude perturbation quotient
+* Shimmer:DDA	-  diferenças médias absolutas entre as amplitudes de ciclos consecutivos
+* NHR -	Noise-to-harmonics ratio
+* HNR -	Harmonics-to-noise ratio
+* RPDE -	Recurrence period density entropy measure
+* D2 -	Correlation dimension
+* DFA	- Signal fractal scaling exponent of detrended fluctuation analysis
+* Spread1 -	medida não linear de variação de frequência 1
+* Spread2	- medida não linear de variação de frequência 2
+* PPE	- Pitch period entropy
+
+
+# 2. Breve Análise Exploratória
+
+```{r, echo=FALSE, fig.width=8, fig.height=5}
+ggplot(dataset, aes(x=factor(status)))+
+  geom_bar(stat="count", width=0.7, fill="#CCCCFF")+
+  theme_minimal() #dados desiquilibrados (unbalanced data)
+
+```
+
+Ao fazer um simples grafico de barras da base de dados, separando a nossa amostra com base na nossa variável resposta, deparamo-nos com um caso de *unbalanced data*, ou dados desiquilibrados. Isto é, o número de individuos com parkinson na nossa amostra é muito superior ao número de individuos saúdaveis, tendo menos de uma observação saudável para cada três observações com parkinson. Isto pode levar, a que os modelos criados não sejam tão bons quanto o que aparentam ser. Apesar disso, este é um problema que não vou trabalhar imediatamente, mas que mercerá atenção mais à frente.
+
+De seguida podemos observar as correlações entre as variáveis:
+
+```{r fig1}
+
+dataset$status <- as.numeric(dataset$status) #converter status para factor
+df <- dataset[-1]
+
+cormat <- round(cor(df),1)
+
+
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+} #funcao para obter triangulo superior da tabela de correlacoes
+
+upper_tri <- get_upper_tri(cormat)
+
+melted_cormat <- melt(upper_tri, na.rm = TRUE) #
+
+ggheatmap  <- ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#FFCCCC", high = "#CCCCFF", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 8, hjust = 1))+
+  coord_fixed()
+
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 3) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+
+```
+
+Algo que podemos ver imediatamente é que temos variáveis com correlações muito fortes, como é o caso da variável  MDVP.Shimmer e as variáveis MDVP:Shimmer(dB), Shimmer:APQ3, Shimmer:APQ5, MDVP:APQ11 e Shimmer:DDA, o que seria de esperar, uma vez que todas as variáveis representam diferentes testes de medida de um mesmo elemento da voz, jitter. Isto pode levar a que os modelos não sejam tão bons quanto o que aparentam ser, pois a existência de varias variáveis que contém a mesma informação (ou informação muito similar) fará com que estas tenham um peso desproporcional nos modelos. Assim, devemos de remover variáveis que possam enviesar os resultados do modelo.Neste caso iremos remover todas as varáveis com correlações muito fortes, por ser o caminho certo a seguir na maioria das vezes, mas isso poderá nem sempre ser o caso. Neste caso por exemplo, diferentes testes para uma mesma variável podem estar muito correlacionados e serem ambos relevantes para a construção do modelo. Como não me é possível neste caso fazer uma análise cuidada de cada uma das variáveis para compreender melhor como cada uma funciona, irei então optar por manter apenas uma no caso de as correlações serem muito elevadas (cor > 0.75).
+
+De forma muito rápida poemos confirmar que várias variáveis apresentam a mesma informação em escalas diferentes e por isso podem fácilmente ser removidas.
+
+Variáveis a remover:
+
+* MDVP:Jitter(Abs)
+* MDVP:Shimmer(dB)
+* Jitter:DDP
+* Shimmer:APQ3 
+* Shimmer:APQ5
+* Shimmer:APQ11
+* MDVP:PPQ
+* Shimmer:DDA
+* HNR
+* MDVP.RAP
+
+```{r}
+df <- df[-c(5,6,7,8,9,10,11,12,13,14,15)]
+```
+
+Fazendo assim a nova matriz de covariancias:
+
+```{r}
+cormat <- round(cor(df),1)
+
+upper_tri <- get_upper_tri(cormat)
+
+melted_cormat <- melt(upper_tri, na.rm = TRUE) #
+
+ggheatmap  <- ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#FFCCCC", high = "#CCCCFF", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 8, hjust = 1))+
+  coord_fixed()
+
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 3) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+
+```
+
+Estando tratada o problema com as variáveis altamente correlacionadas podemos seguir para a criação dos modelos e a sua análise.
+
+# 3. Modelos
+
+Antes de iniciar a construção do modelo é importante fazer a separação dos dados em dados de treino e dados de teste, de forma a podermos validar os resultados Neste caso, vamos optar pela popular divisão da base de dados em 80% para treino e 20% para teste.
+
+```{r}
+set.seed(123)
+
+training.samples<- df$status %>% 
+  createDataPartition(p = 0.8, list = FALSE)
+train.data  <- df[training.samples, ]
+test.data <- df[-training.samples, ]
+```
+
+
+### 3.1. Árvore de Decisão
+
+Árvores de decisão são um método de aprendisagem não supervisionado não paramétrico. Este tipo de modelos fazem inferência para a variável de resposta deduzindo um conjunto de decisões simples a partir das variáveis de decisão. 
+
+
+```{r}
+rpart.model <- rpart(factor(status) ~., data = train.data, method = "class")
+par(xpd = NA)
+
+fancyRpartPlot(rpart.model)
+
+
+predicted.classes <- rpart.model %>% predict(test.data, type = "class") 
+head(predicted.classes)
+
+mean(predicted.classes == test.data$status)
+
+confusionMatrix(predicted.classes, factor(test.data$status))
+
+```
+
+No bloco de código acima utilizamos uma árvore de decisão para tentar classificar os individuos como portadores ou não de Parkinson. O modelo começ por utilizar a variável **PPE** (Pitch Period Entropy), tendo utilizado depois a **frequência vocal fundamental máxima** como ponto de corte para os individuos com um PPE < 0.13 e **Spread2** para os individuos com um PPE > a 0.13. Apesar de ainda só termos passado por dois níveis da árvore de decisão, é possível ver como esta, apesar de razoavelmente intuitiva se pode tornar complicada de explicar quando o número de ramificações é elevado. Assim de forma a atenuar esse problema podemos usar a função **prune.rpart** para fazer o *pruning* do modelo, isto é, sáo removidas secções não criticas da árvore de decisão com vista a tornar a mesma mais simples e mais interpretável.
+
+```{r}
+pruned.model <- prune.rpart(rpart.model,0.1)
+
+fancyRpartPlot(pruned.model)
+
+predicted.classes <- pruned.model %>% predict(test.data, type = "class") 
+head(predicted.classes)
+
+mean(predicted.classes == test.data$status)
+
+confusionMatrix(predicted.classes, factor(test.data$status))
+```
+
+Assim, após esta alteração ficamos com uma árvore de decisão mais muito mais simples e com melhor interpretabilidade. Neste caso a árvore passa a usar apenas a variável **PPE** como ponto de corte classificando assim como portadores todos aqueles com um valor desta variável superior a 0.13.
+
+
+Ficamos com um modelo que tem uma precisão de 87.18% com uma sensibilidade de 62.5% e uma especificidade de 93.55%. A precisão mostra-nos a eficacia geral do modelo para classificar os  individuos portadores ou não de Parkinson, a sensibilidade indica-nos o nosso rácio de não portadores que foram bem classificados, de entre todos os não portadores classificados, e a especificidade indica o rácio de portadores que foram bem classificados, de entre todos os portadores classificados.
+
+Comparando estes resultados com o modelo inicial conseguimos um ligeiro aumento na precisõ do modelo, passando de 84.62% para 87.18% e um ligeiro aumento na especificidade de 90.32% para 93.55%.
+
+### 3.2. Bagging
+
+Bagging é um procedimento utilizado para reduzir a variância de um determinado método de aprendizagem. Este cria vários subsets de dados escolhidos de uma amostra de treino com reposição. Cada conjuto é utilizado para treinar uma árvore de decisão. É depois usada a média de todas as decisóes das árvores produzidas e conseguimos assim um modelo consideravelmente mais robusto do que uma simples árvore de decisão.
+
+```{r,  warning=FALSE}
+model.bagging <- bagging(
+  formula = as.factor(status) ~ .,
+  data = train.data,
+  nbagg = 100,  
+  coob = TRUE,
+  control = rpart.control(minsplit = 2, cp = 0))
+
+predictions.bagging <- model.bagging %>% predict(test.data)
+mean(predictions.bagging==test.data$status)
+
+confusionMatrix(predictions.bagging, factor(test.data$status))
+
+```
+Neste caso, podemos ver que o nosso modelo é considerávelmente mais preciso que a árvore de decisão, com uma recisão de 94.87%, sensibilidade de 75% e uma especificidade de 100%! 
+
+Dados os resultados deste modelo, e assumindo que se verificariam os mesmo reultados noutras amostras da população, este poderia ser muito interessante para ajusar a encaminhar pacientes para um acompanhamento mais detalhado para a Parkinson. Apesar de a precisão ser de ,apróxiamdamente, 95%, o que não é o ideial quando lidamos com doenças, a especificidade, que neste caso nos indica o quão preciso o modelo é a classificar portadores da doença, é de 100%. Assim o modelo poderia ser usado para ajudar a reduzir a quantidade de não portadores que seriam encaminhados para acompanhamento desnecessáriamente, porque o nosso maior medo, que seria deixar passar os portadores da doença, não se verifica neste modelo.
+
+### 3.3. Random Forest
+
+O Random Forest funciona de forma muito similar ao método Bagging, com a diferença que em vez de utilizar todas os previsores para a contrução das árvores de decisão que serão utilizadas para criar o modelo, o Random Forest faz uam seleção aleatória dos previsores. Será assim de esperar resultados razoávelmente similares aos que obtivemos com recurso ao Bagging.
+
+```{r,  warning=FALSE}
+
+
+rfover <- randomForest(factor(status)~., data = train.data)
+confusionMatrix(predict(rfover, test.data), factor(test.data$status), positive = '1')
+
+```
+Assim, como esperávamos, obtivemos efetivamente resulados identicos, sendo até, neste caso exatamente iguais entre os dois modelos.
+
+### 3.4. Boosting 
+
+Boosting é um método de aprendizagem que procura reduzir o viés e a variância utilizando um conjunto de modelos simples (weak learners), para criar um modelo mais robusto.
+
+Tal como os dois modelos analisados previamente, neste caso, irá criar várias árvores de decisão como forma de melhorar a precisão. Neste caso a amostra não é recolhida com recurso a métodos de bootstraping,  sendo antes utilizada uma versão modificada dos dados originais e criando cada árvore com base nas informações obtidas nas árvores anteriores.
+
+```{r, results=FALSE, warning=FALSE, message=FALSE}
+
+
+model.boosting <- train(
+  factor(status) ~., data = train.data, method = "xgbTree",
+  trControl = trainControl("cv", number=10))
+```
+```{r}
+predicted.classes.boosting <- model.boosting %>% predict(test.data)
+confusionMatrix(predicted.classes.boosting, factor(test.data$status))
+```
+Mais uma vez, vemos que o modelo gerou resultados muito similares, tendo conseguido algumas melhorias. A accuray aumentou para 97.44%, com uma especificidade de 100% e sensibilidade de 87.5%.
+
+
+
+### 3.5. SVM
+
+Por fim, support vector machine, ou máquina de vetores de suporte, é um conceito que se refere a um método de aprendizagem supervisionado não probabilistico. Dado um conjunto de dados de treino, este classifica cada um deles como pertencendo a uma deterinada categoria e separa-os no espaço por uma distâncai tão ampla quanto possivel.
+
+```{r fig2}
+set.seed(123)
+
+
+
+classifier = svm(formula = status ~ .,
+                 data = train.data,
+                 type = 'C-classification',
+                 kernel = 'linear')
+predicted.classes <- classifier %>% predict(test.data)
+
+mean(predicted.classes == test.data$status)
+
+confusionMatrix(predicted.classes, factor(test.data$status))
+
+
+```
+O modelo SVM por sua vez apresenta resultados ligeiramente inferiores quando comparado com modelos como o Bagging ou RF. Apesar disso os resultados continuam a ser bastante bons.
+
+Seria interessante ver a forma como as classes são separadas pelo modelo, mas dada a dimensionalidade dos dados, tal nõ será possível.
+
+Em suma, os modelos apresentam de forma geral bons resultados, mas isto é antes de considerarmos um aspeto que foi referido no inicio que é a *unbalanced data*. Como a quantidade de observações para portadores de doenças é muito superior às de não portadores, os nossos resultados acabam por ser influneciados por por este desiquilibrio nos dados. Neste caso, mesmo que os modelos classificassem todos as observações como 1 (portadores) os nossos modelos ainda teriam precisões superiores a 70%, e daí a importância de olhar para a especificidade e sensibilidade numa matrix de confusão.
+
+Então, de forma a tentar resolver o problema do desiquilibrio nos dados, podemos recorrer a um conjunto de técnicas que procurar equilibrar as diferenças e melhorar os resultados.
+
+# 4.Unbalanced Data
+
+Over e Under sampling são dois métodos muito populares para dar resposta a este problema, sendo que neste caso irei por de parte à partida o método de Undersampling, porque leva a perda de informações potèncialmente importante, o que, numa base de dados que já é muito pequena à partida iriamos acabar por incorrer em outros problemas relacionados com a dimensão.
+
+
+### 4.1.Oversampling
+
+Oversampling é um método que nos permite lidar com dados desiquilibrados que atua sobre a classe minoritária e recolhe e replica observações dessa mesma classe de forma a equilibrar o número de dados em cada classe.
+
+Apesar de este método não levar a perdas de informação como o undersampling, como replica dados estes acabam por levar a um overfittibng do modelo e consequente piores resultados nos dados não observados(dados de treino).
+
+```{r}
+df.over <-ovun.sample(status~., data = df, method = "over", N = 294)$data
+table(df.over$status)
+
+
+```
+Podemos assim ver que teremos então 147 observações para cada uma das classes.
+
+### 4.2.SMOTE
+
+De forma a tentar combater este problema de overfitting podemos optar por um método diferente de oversampling denomidado por Synthetic Data Generation, synthetic Minority Oversampling Technique (SMOTE).
+
+Este tem um comportamento similar ao oversampling, mas no lugar de replicar os dados da classe minoritária, são gerados com base em semelhanças  entre os preditores.
+
+```{r}
+set.seed(123)
+df.rose <-ROSE(status~., data = train.data, seed =1)$data
+test.rose <- ROSE(status~., data = test.data, seed =1)$data
+
+table(df.rose$status)
+
+```
+
+Podemos agora ver que temos dados muito mais equilibrados, e sendo que o método SMOTE cria, por norma, resultados significativamente melhores do que o método de oversampling simples, vamos optar por correr os modelos novamente com os novos dados e comparar os resultados.
+
+### 4.3. Modelos(V1.0.1)
+
+```{r}
+
+rfover <- randomForest(factor(status)~., data = df.rose)
+confusionMatrix(predict(rfover, test.rose), factor(test.rose$status), positive = '1')
+
+
+```
+```{r}
+
+
+classifier = svm(formula = status ~ .,
+                 data = df.rose,
+                 type = 'C-classification',
+                 kernel = 'linear')
+predicted.classes <- classifier %>% predict(test.rose)
+
+mean(predicted.classes == test.rose$status)
+
+confusionMatrix(predicted.classes, factor(test.rose$status))
+
+
+```
+
+```{r}
+set.seed(123)
+model.bagging <- bagging(
+  formula = as.factor(status) ~ .,
+  data = df.rose,
+  nbagg = 100,  
+  coob = TRUE,
+  control = rpart.control(minsplit = 2, cp = 0))
+
+predictions.bagging <- model.bagging %>% predict(test.rose)
+mean(predictions.bagging==test.rose$status)
+
+confusionMatrix(predictions.bagging, factor(test.rose$status))
+
+```
+
+Vemos então que nos modelos testados se observa uma ligeira diminuição na precisão geral do modelo, mas em todos eles se vê um aumento da especificidade, possivelmente o que seria de esperar de uma base de dados mais equilibrada. 
+
+No entanto é notória a diminuição na capacidade de o modelo prever corretamente os individuos portadores da doença. Isto pode ser um resultado de overfitting ou algum outro problema criado pelo facto de estarmos a geral uma quantidade muito considerável de dados de forma a equilibrar as classes.
+
+
+# 5.Considerações Finais
+
+Com recurso à base de dados Parkinson foi possível não só praticar e perceber a aplicação de vários métodos de aprendizagem estatística, mas também de de obter um melhor entendimento de processos investigativos, o que se mostrou um processo não só extremamente interessante, mas também incrívelmente satisfatório.
+
+Os resultados obtidos revelaram-se melhores do que o que esperava no início do trabalho e apesar de algumas limitações.
+No futuro gostaria de poder trabalhar mais nestas limitações, nomeadamente:
+
+* O facto de a base de dados ser notóriamente pequena para processos de 
+aprendizagem
+
+* Ter alguma informações extra sobre os processos por detrás das variáveis preditivas, uma vez que se tratam de testes bastante técnicos de vários aspetos da voz dos pacientes e ter mais informação ajudaria imenso no processo de analisar resultados e poder fazer uma verdadeira análise exploratória dos dados.
+
+* Os resultados obtidos, antes da alicação dos métodos para combater o desiquilibrio nos dados, são particularmente interessantes, **sob a hipótese de que estes poderiam ser extrapolados da amostra para a população**. Uma vez que ser capaz de classificar com 100% de precisão os casos positivos, e manter resultados muito razoáveis e claramente melhor do que aleatórios para os não portadores da doença, seria extremamente útil numa prespetiva de reduzir o número de rastreios. Assim, mesmo tendo que ser feito um rastreio para confirmar se os casos classificados como positivos são realmente positivos, o facto de podermos excluir individuos de uma forma não invasiva e possivelmente sem necessidade de deslocações a instalações com com equipamento dispendioso.
+
+
+Por fim não pode faltar um sentido agradecimento à equipa docente, pela disponibilidade demonstrada durante todo o trabalho.
+
+# 6.Referências
+
+*https://www.analyticsvidhya.com/blog/2016/03/practical-guide-deal-imbalanced-classification-problems/
+*https://www.datacamp.com/community/tutorials/support-vector-machines-r
+*https://www.kaggle.com/datasets/debasisdotcom/parkinson-disease-detection
+*https://app.datacamp.com/learn/courses/introduction-to-the-tidyverse
+*https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5434464/#B5
+*https://www.msdmanuals.com/pt-pt/profissional/dist%C3%BArbios-neurol%C3%B3gicos/transtornos-de-movimento-e-cerebelares/doen%C3%A7a-de-parkinson
+
